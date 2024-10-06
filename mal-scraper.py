@@ -1,7 +1,7 @@
 import argparse
 import logging
 import time
-from typing import Dict, List
+from typing import Dict
 
 import requests
 import pandas as pd
@@ -25,36 +25,34 @@ def fetch_data(url: str, params: Dict = None) -> Dict:
         return {}
 
 
-def get_anime_list(limit: int) -> List[Dict]:
-    """Fetches a list of isekai anime from the Jikan API."""
-    anime_list = []
+def get_anime_list(limit: int) -> pd.DataFrame:
+    """Fetches a list of isekai anime from the Jikan API and returns it as a DataFrame."""
+    anime_df = pd.DataFrame()
     page = 1
-    while len(anime_list) < limit:
-        data = fetch_data(
-            f"{BASE_URL}/anime",
-            params={
-                "genres": GENRE_ISEKAI,
-                "page": page,
-                "limit": min(limit - len(anime_list), 25),
-            },
-        )
+    while len(anime_df) < limit:
+        data = fetch_data(f"{BASE_URL}/anime", params={"genres": GENRE_ISEKAI, "page": page, "limit": min(limit - len(anime_df), 25)})
         if 'data' in data:
-            anime_list.extend(data['data'])
+            for anime in data['data']:
+                anime_details = parse_anime_details(anime)
+                anime_df = pd.concat([anime_df, pd.DataFrame([anime_details])], ignore_index=True)
             logging.info(f"Fetched {len(data['data'])} anime from page {page}")
             page += 1
         else:
             break
-    return anime_list
+    return anime_df
 
 
-def get_anime_characters(anime_id: int, character_limit: int) -> List[Dict]:
-    """Fetches characters for a specific anime from the Jikan API."""
+def get_anime_characters(anime_id: int, character_limit: int) -> pd.DataFrame:
+    """Fetches characters for a specific anime from the Jikan API and returns it as a DataFrame."""
+    character_df = pd.DataFrame()
     data = fetch_data(f"{BASE_URL}/anime/{anime_id}/characters")
     if 'data' in data:
         characters = data['data'][:character_limit]
         logging.info(f"Fetched {len(characters)}/{character_limit} characters for anime ID {anime_id}")
-        return characters
-    return []
+        for character in characters:
+            character_details = parse_character_details(character, anime_id)
+            character_df = pd.concat([character_df, pd.DataFrame([character_details])], ignore_index=True)
+    return character_df
 
 
 def parse_anime_details(anime: Dict) -> Dict:
@@ -116,13 +114,6 @@ def parse_character_details(character: Dict, anime_id: int) -> Dict:
     }
 
 
-def save_to_csv(data: List[Dict], filename: str):
-    """Saves data to a CSV file using pandas."""
-    df = pd.DataFrame(data)
-    df.to_csv(filename, index=False, encoding='utf-8')
-    logging.info(f"Data saved to {filename}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Fetch and create a dataset of Isekai anime and their characters.")
     parser.add_argument("-l", "--limit", type=int, default=10, help="Limit the number of anime to fetch.")
@@ -132,19 +123,17 @@ def main():
     parser.add_argument("-ch", "--character_file", type=str, default="characters.csv", help="Filename for saving character data.")
     args = parser.parse_args()
 
-    anime_list = get_anime_list(args.limit)
-    parsed_anime_list = [parse_anime_details(anime) for anime in anime_list]
-    save_to_csv(parsed_anime_list, args.anime_file)
+    anime_df = get_anime_list(args.limit)
+    anime_df.to_csv(args.anime_file, index=False, encoding='utf-8')
+    logging.info(f"Anime data saved to {args.anime_file}")
 
     if args.characters:
-        all_characters = []
-        for anime in anime_list:
-            anime_id = anime.get("mal_id")
-            if anime_id:
-                characters = get_anime_characters(anime_id, args.character_limit)
-                parsed_characters = [parse_character_details(character, anime_id) for character in characters]
-                all_characters.extend(parsed_characters)
-        save_to_csv(all_characters, args.character_file)
+        character_df = pd.DataFrame()
+        for anime_id in anime_df['anime_id']:
+            characters = get_anime_characters(anime_id, args.character_limit)
+            character_df = pd.concat([character_df, characters], ignore_index=True)
+        character_df.to_csv(args.character_file, index=False, encoding='utf-8')
+        logging.info(f"Character data saved to {args.character_file}")
 
 
 if __name__ == "__main__":
