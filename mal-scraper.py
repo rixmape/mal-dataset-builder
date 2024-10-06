@@ -50,9 +50,17 @@ def get_anime_characters(anime_id: int, character_limit: int) -> pd.DataFrame:
         characters = data['data'][:character_limit]
         logging.info(f"Fetched {len(characters)}/{character_limit} characters for anime ID {anime_id}")
         for character in characters:
-            character_details = parse_character_details(character, anime_id)
+            character_full_details = get_full_character_details(character['character']['mal_id'])
+            character_details = parse_character_details(character, anime_id, character_full_details)
             character_df = pd.concat([character_df, pd.DataFrame([character_details])], ignore_index=True)
     return character_df
+
+
+def get_full_character_details(character_id: int) -> Dict:
+    """Fetches full character details from the Jikan API."""
+    data = fetch_data(f"{BASE_URL}/characters/{character_id}")
+    logging.info(f"Fetched full details for character ID {character_id}")
+    return data.get('data', {})
 
 
 def parse_anime_details(anime: Dict) -> Dict:
@@ -95,18 +103,18 @@ def parse_anime_details(anime: Dict) -> Dict:
     }
 
 
-def parse_character_details(character: Dict, anime_id: int) -> Dict:
+def parse_character_details(character: Dict, anime_id: int, full_details: Dict) -> Dict:
     """Parses character details into a dictionary."""
     return {
         "character_id": character["character"]["mal_id"],
         "anime_id": anime_id,
         "name": character["character"]["name"],
-        "name_kanji": character["character"].get("name_kanji"),
-        "nicknames": ", ".join(character["character"].get("nicknames", [])),
+        "name_kanji": full_details.get("name_kanji"),
+        "nicknames": ", ".join(full_details.get("nicknames", [])),
         "url": character["character"].get("url"),
         "image_url": character["character"].get("images", {}).get("jpg", {}).get("image_url"),
-        "favorites": character["character"].get("favorites"),
-        "about": character["character"].get("about"),
+        "favorites": full_details.get("favorites"),
+        "about": full_details.get("about"),
         "role": character.get("role"),
         "voice_actor_name": ", ".join([va["person"]["name"] for va in character.get("voice_actors", [])]),
         "voice_actor_lang": ", ".join([va["language"] for va in character.get("voice_actors", [])]),
