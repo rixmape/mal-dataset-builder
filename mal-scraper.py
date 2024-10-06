@@ -1,228 +1,151 @@
-import asyncio
-import csv
+import argparse
 import logging
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
-import aiohttp
-from aiohttp import ClientError, ClientResponseError
+import requests
+import pandas as pd
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+BASE_URL = "https://api.jikan.moe/v4"
+GENRE_ISEKAI = 62
+RATE_LIMIT_DELAY = 2  # Delay in seconds to manage API rate limits
 
 
-@dataclass
-class Config:
-    anime_limit: int = 10
-    characters_per_anime: int = 10
-    anime_output: str = "anime.csv"
-    characters_output: str = "characters.csv"
-    log_level: str = "INFO"
+def fetch_data(url: str, params: Dict = None) -> Dict:
+    """Fetch data from the given URL with specified parameters."""
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        time.sleep(RATE_LIMIT_DELAY)
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Request failed: {e}")
+        return {}
 
-class RateLimiter:
-    def __init__(self, requests_per_second: int = 2, requests_per_minute: int = 50):
-        self.requests_per_second = requests_per_second
-        self.requests_per_minute = requests_per_minute
-        self.last_request_time = 0
-        self.requests_this_minute = 0
-        self.minute_start_time = time.time()
 
-    async def wait(self):
-        current_time = time.time()
+def get_anime_list(limit: int) -> List[Dict]:
+    """Fetches a list of isekai anime from the Jikan API."""
+    anime_list = []
+    page = 1
+    while len(anime_list) < limit:
+        data = fetch_data(
+            f"{BASE_URL}/anime",
+            params={
+                "genres": GENRE_ISEKAI,
+                "page": page,
+                "limit": min(limit - len(anime_list), 25),
+            },
+        )
+        if 'data' in data:
+            anime_list.extend(data['data'])
+            logging.info(f"Fetched {len(data['data'])} anime from page {page}")
+            page += 1
+        else:
+            break
+    return anime_list
 
-        # Check rate limit per second
-        time_since_last_request = current_time - self.last_request_time
-        if time_since_last_request < 1 / self.requests_per_second:
-            await asyncio.sleep(1 / self.requests_per_second - time_since_last_request)
 
-        # Check rate limit per minute
-        if current_time - self.minute_start_time >= 60:
-            self.requests_this_minute = 0
-            self.minute_start_time = current_time
+def get_anime_characters(anime_id: int, character_limit: int) -> List[Dict]:
+    """Fetches characters for a specific anime from the Jikan API."""
+    data = fetch_data(f"{BASE_URL}/anime/{anime_id}/characters")
+    if 'data' in data:
+        characters = data['data'][:character_limit]
+        logging.info(f"Fetched {len(characters)}/{character_limit} characters for anime ID {anime_id}")
+        return characters
+    return []
 
-        if self.requests_this_minute >= self.requests_per_minute:
-            await asyncio.sleep(60 - (current_time - self.minute_start_time))
-            self.requests_this_minute = 0
-            self.minute_start_time = time.time()
 
-        self.requests_this_minute += 1
-        self.last_request_time = time.time()
+def parse_anime_details(anime: Dict) -> Dict:
+    """Parses anime details into a dictionary."""
+    return {
+        "anime_id": anime.get("mal_id"),
+        "title": anime.get("title"),
+        "title_english": anime.get("title_english"),
+        "title_japanese": anime.get("title_japanese"),
+        "title_synonyms": ", ".join(anime.get("title_synonyms", [])),
+        "url": anime.get("url"),
+        "image_url": anime.get("images", {}).get("jpg", {}).get("image_url"),
+        "trailer_url": anime.get("trailer", {}).get("url"),
+        "type": anime.get("type"),
+        "source": anime.get("source"),
+        "episodes": anime.get("episodes"),
+        "status": anime.get("status"),
+        "airing": anime.get("airing"),
+        "aired_from": anime.get("aired", {}).get("from"),
+        "aired_to": anime.get("aired", {}).get("to"),
+        "duration": anime.get("duration"),
+        "rating": anime.get("rating"),
+        "score": anime.get("score"),
+        "scored_by": anime.get("scored_by"),
+        "rank": anime.get("rank"),
+        "popularity": anime.get("popularity"),
+        "members": anime.get("members"),
+        "favorites": anime.get("favorites"),
+        "synopsis": anime.get("synopsis"),
+        "background": anime.get("background"),
+        "season": anime.get("season"),
+        "year": anime.get("year"),
+        "broadcast_day": anime.get("broadcast", {}).get("day"),
+        "broadcast_time": anime.get("broadcast", {}).get("time"),
+        "producers": ", ".join([producer["name"] for producer in anime.get("producers", [])]),
+        "licensors": ", ".join([licensor["name"] for licensor in anime.get("licensors", [])]),
+        "studios": ", ".join([studio["name"] for studio in anime.get("studios", [])]),
+        "genres": ", ".join([genre["name"] for genre in anime.get("genres", [])]),
+        "themes": ", ".join([theme["name"] for theme in anime.get("themes", [])]),
+    }
 
-class JikanAPI:
-    BASE_URL = "https://api.jikan.moe/v4"
 
-    def __init__(self, rate_limiter: RateLimiter):
-        self.rate_limiter = rate_limiter
+def parse_character_details(character: Dict, anime_id: int) -> Dict:
+    """Parses character details into a dictionary."""
+    return {
+        "character_id": character["character"]["mal_id"],
+        "anime_id": anime_id,
+        "name": character["character"]["name"],
+        "name_kanji": character["character"].get("name_kanji"),
+        "nicknames": ", ".join(character["character"].get("nicknames", [])),
+        "url": character["character"].get("url"),
+        "image_url": character["character"].get("images", {}).get("jpg", {}).get("image_url"),
+        "favorites": character["character"].get("favorites"),
+        "about": character["character"].get("about"),
+        "role": character.get("role"),
+        "voice_actor_name": ", ".join([va["person"]["name"] for va in character.get("voice_actors", [])]),
+        "voice_actor_lang": ", ".join([va["language"] for va in character.get("voice_actors", [])]),
+        "voice_actor_image_url": ", ".join([va["person"]["images"]["jpg"]["image_url"] for va in character.get("voice_actors", [])])
+    }
 
-    async def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        retries = 5
-        backoff_time = 1  # Start with 1 second backoff
 
-        while retries > 0:
-            await self.rate_limiter.wait()
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(f"{self.BASE_URL}{endpoint}", params=params) as response:
-                        response.raise_for_status()
-                        return await response.json()
-            except ClientResponseError as e:
-                if e.status == 429:  # Rate limiting error
-                    logging.warning(f"Rate limited. Backing off for {backoff_time} seconds.")
-                    await asyncio.sleep(backoff_time)
-                    backoff_time *= 2  # Exponential backoff
-                    retries -= 1
-                else:
-                    raise e
-            except (ClientError, asyncio.TimeoutError) as e:
-                logging.error(f"Network error: {e}. Retrying...")
-                await asyncio.sleep(backoff_time)
-                backoff_time *= 2
-                retries -= 1
-        raise Exception("Max retries exceeded after hitting rate limits or network errors")
+def save_to_csv(data: List[Dict], filename: str):
+    """Saves data to a CSV file using pandas."""
+    df = pd.DataFrame(data)
+    df.to_csv(filename, index=False, encoding='utf-8')
+    logging.info(f"Data saved to {filename}")
 
-class IsekaiAnimeScraper:
-    def __init__(self, config: Config, api: JikanAPI):
-        self.config = config
-        self.api = api
-        self.setup_logging()
 
-    def setup_logging(self):
-        logging.basicConfig(level=self.config.log_level, format='%(asctime)s - %(levelname)s - %(message)s')
+def main():
+    parser = argparse.ArgumentParser(description="Fetch and create a dataset of Isekai anime and their characters.")
+    parser.add_argument("-l", "--limit", type=int, default=10, help="Limit the number of anime to fetch.")
+    parser.add_argument("-c", "--characters", action="store_true", help="Include character details in the dataset.")
+    parser.add_argument("-cl", "--character_limit", type=int, default=10, help="Limit the number of characters to fetch per anime.")
+    parser.add_argument("-a", "--anime_file", type=str, default="anime.csv", help="Filename for saving anime data.")
+    parser.add_argument("-ch", "--character_file", type=str, default="characters.csv", help="Filename for saving character data.")
+    args = parser.parse_args()
 
-    async def fetch_isekai_anime(self) -> List[Dict[str, Any]]:
-        anime_list = []
-        page = 1
-        params = {
-            "genres": "62",  # 62 is the genre ID for Isekai
-            "order_by": "popularity",
-            "sort": "asc",
-            "sfw": "false",
-            "limit": 25  # Max allowed by the API
-        }
+    anime_list = get_anime_list(args.limit)
+    parsed_anime_list = [parse_anime_details(anime) for anime in anime_list]
+    save_to_csv(parsed_anime_list, args.anime_file)
 
-        while len(anime_list) < self.config.anime_limit:
-            params["page"] = page
-            try:
-                response = await self.api.get("/anime", params)
-                new_anime = response.get("data", [])
-
-                if not new_anime:
-                    break
-
-                anime_list.extend(new_anime)
-                page += 1
-            except Exception as e:
-                logging.error(f"Failed to fetch Isekai anime on page {page}: {e}")
-                break
-
-        return anime_list[:self.config.anime_limit]
-
-    async def fetch_anime_characters(self, anime_id: int) -> List[Dict[str, Any]]:
-        try:
-            response = await self.api.get(f"/anime/{anime_id}/characters")
-            return response.get("data", [])[:self.config.characters_per_anime]
-        except Exception as e:
-            logging.error(f"Failed to fetch characters for anime ID {anime_id}: {e}")
-            return []
-
-    async def fetch_character_details(self, character_id: int) -> Optional[Dict[str, Any]]:
-        try:
-            response = await self.api.get(f"/characters/{character_id}")
-            return response.get("data", {})
-        except Exception as e:
-            logging.error(f"Failed to fetch details for character ID {character_id}: {e}")
-            return None
-
-    async def process_anime_data(self, anime_list: List[Dict[str, Any]]):
-        try:
-            with open(self.config.anime_output, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    "mal_id", "title", "title_english", "synopsis", "type", "episodes", "status",
-                    "aired_from", "aired_to", "score", "scored_by", "rank", "popularity", "members",
-                    "favorites", "studios", "genres", "themes", "duration", "rating", "season", "year"
-                ])
-                writer.writeheader()
-                for anime in anime_list:
-                    writer.writerow({
-                        "mal_id": anime["mal_id"],
-                        "title": anime["title"],
-                        "title_english": anime.get("title_english", ""),
-                        "synopsis": anime.get("synopsis", ""),
-                        "type": anime["type"],
-                        "episodes": anime["episodes"],
-                        "status": anime["status"],
-                        "aired_from": anime["aired"]["from"],
-                        "aired_to": anime["aired"]["to"],
-                        "score": anime["score"],
-                        "scored_by": anime["scored_by"],
-                        "rank": anime["rank"],
-                        "popularity": anime["popularity"],
-                        "members": anime["members"],
-                        "favorites": anime["favorites"],
-                        "studios": ", ".join(studio["name"] for studio in anime["studios"]),
-                        "genres": ", ".join(genre["name"] for genre in anime["genres"]),
-                        "themes": ", ".join(theme["name"] for theme in anime["themes"]),
-                        "duration": anime["duration"],
-                        "rating": anime["rating"],
-                        "season": anime.get("season", ""),
-                        "year": anime.get("year", "")
-                    })
-            logging.info(f"Successfully wrote anime data to {self.config.anime_output}")
-        except Exception as e:
-            logging.error(f"Failed to write anime data to CSV: {e}")
-
-    async def process_character_data(self, all_characters: List[Dict[str, Any]]):
-        try:
-            with open(self.config.characters_output, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    "mal_id", "name", "name_kanji", "nicknames", "about", "role",
-                    "anime_mal_id", "favorites", "voice_actors"
-                ])
-                writer.writeheader()
-                for character in all_characters:
-                    char_details = await self.fetch_character_details(character["character"]["mal_id"])
-                    if not char_details:
-                        continue
-                    writer.writerow({
-                        "mal_id": char_details["mal_id"],
-                        "name": char_details["name"],
-                        "name_kanji": char_details.get("name_kanji", ""),
-                        "nicknames": ", ".join(char_details.get("nicknames", [])),
-                        "about": char_details.get("about", ""),
-                        "role": character["role"],
-                        "anime_mal_id": character["anime_mal_id"],
-                        "favorites": char_details["favorites"],
-                        "voice_actors": ", ".join(f"'{va['person']['name']}:{va['language']}'" for va in character["voice_actors"])
-                    })
-            logging.info(f"Successfully wrote character data to {self.config.characters_output}")
-        except Exception as e:
-            logging.error(f"Failed to write character data to CSV: {e}")
-
-    async def run(self):
-        logging.info("Starting Isekai anime scraping")
-        anime_list = await self.fetch_isekai_anime()
-        logging.info(f"Fetched {len(anime_list)} Isekai anime")
-
-        await self.process_anime_data(anime_list)
-
+    if args.characters:
         all_characters = []
-        tasks = []
         for anime in anime_list:
-            tasks.append(self.fetch_anime_characters(anime["mal_id"]))
-        results = await asyncio.gather(*tasks)
+            anime_id = anime.get("mal_id")
+            if anime_id:
+                characters = get_anime_characters(anime_id, args.character_limit)
+                parsed_characters = [parse_character_details(character, anime_id) for character in characters]
+                all_characters.extend(parsed_characters)
+        save_to_csv(all_characters, args.character_file)
 
-        for anime, characters in zip(anime_list, results):
-            for character in characters:
-                character["anime_mal_id"] = anime["mal_id"]
-            all_characters.extend(characters)
-
-        logging.info(f"Fetched {len(all_characters)} characters")
-
-        await self.process_character_data(all_characters)
-
-        logging.info("Scraping completed successfully")
 
 if __name__ == "__main__":
-    config = Config()
-    rate_limiter = RateLimiter()
-    api = JikanAPI(rate_limiter)
-    scraper = IsekaiAnimeScraper(config, api)
-    asyncio.run(scraper.run())
+    main()
