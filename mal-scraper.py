@@ -1,12 +1,13 @@
-import aiohttp
 import asyncio
 import csv
 import logging
 import time
-from typing import Dict, List, Any
 from dataclasses import dataclass
-from pathlib import Path
-from aiohttp import ClientResponseError
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+from aiohttp import ClientError, ClientResponseError
+
 
 @dataclass
 class Config:
@@ -51,7 +52,7 @@ class JikanAPI:
     def __init__(self, rate_limiter: RateLimiter):
         self.rate_limiter = rate_limiter
 
-    async def get(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         retries = 5
         backoff_time = 1  # Start with 1 second backoff
 
@@ -70,7 +71,12 @@ class JikanAPI:
                     retries -= 1
                 else:
                     raise e
-        raise Exception("Max retries exceeded after hitting rate limits")
+            except (ClientError, asyncio.TimeoutError) as e:
+                logging.error(f"Network error: {e}. Retrying...")
+                await asyncio.sleep(backoff_time)
+                backoff_time *= 2
+                retries -= 1
+        raise Exception("Max retries exceeded after hitting rate limits or network errors")
 
 class IsekaiAnimeScraper:
     def __init__(self, config: Config, api: JikanAPI):
@@ -94,99 +100,123 @@ class IsekaiAnimeScraper:
 
         while len(anime_list) < self.config.anime_limit:
             params["page"] = page
-            response = await self.api.get("/anime", params)
-            new_anime = response["data"]
+            try:
+                response = await self.api.get("/anime", params)
+                new_anime = response.get("data", [])
 
-            if not new_anime:
+                if not new_anime:
+                    break
+
+                anime_list.extend(new_anime)
+                page += 1
+            except Exception as e:
+                logging.error(f"Failed to fetch Isekai anime on page {page}: {e}")
                 break
-
-            anime_list.extend(new_anime)
-            page += 1
 
         return anime_list[:self.config.anime_limit]
 
     async def fetch_anime_characters(self, anime_id: int) -> List[Dict[str, Any]]:
-        response = await self.api.get(f"/anime/{anime_id}/characters")
-        return response["data"][:self.config.characters_per_anime]
+        try:
+            response = await self.api.get(f"/anime/{anime_id}/characters")
+            return response.get("data", [])[:self.config.characters_per_anime]
+        except Exception as e:
+            logging.error(f"Failed to fetch characters for anime ID {anime_id}: {e}")
+            return []
 
-    async def fetch_character_details(self, character_id: int) -> Dict[str, Any]:
-        response = await self.api.get(f"/characters/{character_id}")
-        return response["data"]
+    async def fetch_character_details(self, character_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            response = await self.api.get(f"/characters/{character_id}")
+            return response.get("data", {})
+        except Exception as e:
+            logging.error(f"Failed to fetch details for character ID {character_id}: {e}")
+            return None
 
-    async def write_anime_csv(self, anime_list: List[Dict[str, Any]]):
-        with open(self.config.anime_output, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                "mal_id", "title", "title_english", "synopsis", "type", "episodes", "status",
-                "aired_from", "aired_to", "score", "scored_by", "rank", "popularity", "members",
-                "favorites", "studios", "genres", "themes", "duration", "rating", "season", "year"
-            ])
-            writer.writeheader()
-            for anime in anime_list:
-                writer.writerow({
-                    "mal_id": anime["mal_id"],
-                    "title": anime["title"],
-                    "title_english": anime.get("title_english", ""),
-                    "synopsis": anime.get("synopsis", ""),
-                    "type": anime["type"],
-                    "episodes": anime["episodes"],
-                    "status": anime["status"],
-                    "aired_from": anime["aired"]["from"],
-                    "aired_to": anime["aired"]["to"],
-                    "score": anime["score"],
-                    "scored_by": anime["scored_by"],
-                    "rank": anime["rank"],
-                    "popularity": anime["popularity"],
-                    "members": anime["members"],
-                    "favorites": anime["favorites"],
-                    "studios": ", ".join(studio["name"] for studio in anime["studios"]),
-                    "genres": ", ".join(genre["name"] for genre in anime["genres"]),
-                    "themes": ", ".join(theme["name"] for theme in anime["themes"]),
-                    "duration": anime["duration"],
-                    "rating": anime["rating"],
-                    "season": anime.get("season", ""),
-                    "year": anime.get("year", "")
-                })
+    async def process_anime_data(self, anime_list: List[Dict[str, Any]]):
+        try:
+            with open(self.config.anime_output, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    "mal_id", "title", "title_english", "synopsis", "type", "episodes", "status",
+                    "aired_from", "aired_to", "score", "scored_by", "rank", "popularity", "members",
+                    "favorites", "studios", "genres", "themes", "duration", "rating", "season", "year"
+                ])
+                writer.writeheader()
+                for anime in anime_list:
+                    writer.writerow({
+                        "mal_id": anime["mal_id"],
+                        "title": anime["title"],
+                        "title_english": anime.get("title_english", ""),
+                        "synopsis": anime.get("synopsis", ""),
+                        "type": anime["type"],
+                        "episodes": anime["episodes"],
+                        "status": anime["status"],
+                        "aired_from": anime["aired"]["from"],
+                        "aired_to": anime["aired"]["to"],
+                        "score": anime["score"],
+                        "scored_by": anime["scored_by"],
+                        "rank": anime["rank"],
+                        "popularity": anime["popularity"],
+                        "members": anime["members"],
+                        "favorites": anime["favorites"],
+                        "studios": ", ".join(studio["name"] for studio in anime["studios"]),
+                        "genres": ", ".join(genre["name"] for genre in anime["genres"]),
+                        "themes": ", ".join(theme["name"] for theme in anime["themes"]),
+                        "duration": anime["duration"],
+                        "rating": anime["rating"],
+                        "season": anime.get("season", ""),
+                        "year": anime.get("year", "")
+                    })
+            logging.info(f"Successfully wrote anime data to {self.config.anime_output}")
+        except Exception as e:
+            logging.error(f"Failed to write anime data to CSV: {e}")
 
-    async def write_characters_csv(self, characters: List[Dict[str, Any]]):
-        with open(self.config.characters_output, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                "mal_id", "name", "name_kanji", "nicknames", "about", "role",
-                "anime_mal_id", "favorites", "voice_actors"
-            ])
-            writer.writeheader()
-            for character in characters:
-                char_details = await self.fetch_character_details(character["character"]["mal_id"])
-                writer.writerow({
-                    "mal_id": char_details["mal_id"],
-                    "name": char_details["name"],
-                    "name_kanji": char_details.get("name_kanji", ""),
-                    "nicknames": ", ".join(char_details.get("nicknames", [])),
-                    "about": char_details.get("about", ""),
-                    "role": character["role"],
-                    "anime_mal_id": character["anime_mal_id"],
-                    "favorites": char_details["favorites"],
-                    "voice_actors": ", ".join(f"'{va['person']['name']}:{va['language']}'" for va in character["voice_actors"])
-                })
+    async def process_character_data(self, all_characters: List[Dict[str, Any]]):
+        try:
+            with open(self.config.characters_output, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    "mal_id", "name", "name_kanji", "nicknames", "about", "role",
+                    "anime_mal_id", "favorites", "voice_actors"
+                ])
+                writer.writeheader()
+                for character in all_characters:
+                    char_details = await self.fetch_character_details(character["character"]["mal_id"])
+                    if not char_details:
+                        continue
+                    writer.writerow({
+                        "mal_id": char_details["mal_id"],
+                        "name": char_details["name"],
+                        "name_kanji": char_details.get("name_kanji", ""),
+                        "nicknames": ", ".join(char_details.get("nicknames", [])),
+                        "about": char_details.get("about", ""),
+                        "role": character["role"],
+                        "anime_mal_id": character["anime_mal_id"],
+                        "favorites": char_details["favorites"],
+                        "voice_actors": ", ".join(f"'{va['person']['name']}:{va['language']}'" for va in character["voice_actors"])
+                    })
+            logging.info(f"Successfully wrote character data to {self.config.characters_output}")
+        except Exception as e:
+            logging.error(f"Failed to write character data to CSV: {e}")
 
     async def run(self):
         logging.info("Starting Isekai anime scraping")
         anime_list = await self.fetch_isekai_anime()
         logging.info(f"Fetched {len(anime_list)} Isekai anime")
 
-        await self.write_anime_csv(anime_list)
-        logging.info(f"Wrote anime data to {self.config.anime_output}")
+        await self.process_anime_data(anime_list)
 
         all_characters = []
+        tasks = []
         for anime in anime_list:
-            characters = await self.fetch_anime_characters(anime["mal_id"])
+            tasks.append(self.fetch_anime_characters(anime["mal_id"]))
+        results = await asyncio.gather(*tasks)
+
+        for anime, characters in zip(anime_list, results):
             for character in characters:
                 character["anime_mal_id"] = anime["mal_id"]
             all_characters.extend(characters)
 
         logging.info(f"Fetched {len(all_characters)} characters")
 
-        await self.write_characters_csv(all_characters)
-        logging.info(f"Wrote character data to {self.config.characters_output}")
+        await self.process_character_data(all_characters)
 
         logging.info("Scraping completed successfully")
 
