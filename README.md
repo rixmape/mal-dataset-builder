@@ -2,7 +2,7 @@
 
 ## Project Context
 
-The MAL Dataset Builder is a Python-based project aimed at creating a dataset of Isekai anime and their associated characters from [MyAnimeList (MAL)](https://myanimelist.net/), utilizing the [Jikan API](https://jikan.moe/). This project provides an accessible way for users to collect structured information about anime and characters for data analysis, trend observation, or building recommendation systems. The project fetches, processes, and saves this data into CSV files, making it easy to use in data-driven applications.
+The MAL Dataset Builder is a Python-based project aimed at creating a dataset of Isekai anime and their associated character from [MyAnimeList (MAL)](https://myanimelist.net/), utilizing the [Jikan API](https://jikan.moe/). This project provides an accessible way for users to collect structured information about anime and character for data analysis, trend observation, or building recommendation systems. The project fetches, processes, and saves this data into CSV files, making it easy to use in data-driven applications.
 
 ## Getting Started
 
@@ -27,14 +27,14 @@ python mal_scraper.py -l <limit> [-c] [-cl <character_limit>] [-a <anime_file>] 
 The command-line arguments for running the script allow for some user configuration:
 
 - `-l, --limit`: Limit the number of anime to fetch (default is 10).
-- `-c, --characters`: Include character details in the dataset (optional).
-- `-cl, --character_limit`: Limit the number of characters fetched per anime (default is 10).
+- `-c, --character`: Include character details in the dataset (optional).
+- `-cl, --character_limit`: Limit the number of character fetched per anime (default is 10).
 - `-a, --anime_file`: Specify the filename for saving anime data (default is `anime.csv`).
-- `-ch, --character_file`: Specify the filename for saving character data (default is `characters.csv`).
+- `-ch, --character_file`: Specify the filename for saving character data (default is `character.csv`).
 
 ## Data Output
 
-The output of this project consists of two CSV files: `anime.csv` and `characters.csv`. The tables below describe the fields available in each file.
+The output of this project consists of two CSV files: `anime.csv` and `character.csv`. The tables below describe the fields available in each file.
 
 ### Anime Data (`anime.csv`)
 
@@ -69,7 +69,7 @@ The output of this project consists of two CSV files: `anime.csv` and `character
 | `genres`         | String        | Comma-separated list of genres associated with the anime.              |
 | `themes`         | String        | Comma-separated list of themes (e.g., Isekai).                         |
 
-### Character Data (`characters.csv`)
+### Character Data (`character.csv`)
 
 | **Field Name**          | **Data Type** | **Description**                                                     |
 | ----------------------- | ------------- | ------------------------------------------------------------------- |
@@ -97,6 +97,6 @@ The MAL Dataset Builder utilizes the Jikan API, an unofficial API that provides 
 
 - **`/characters/{id}` Endpoint**: This endpoint fetches complete details about a specific character, such as their biography, nicknames, favorite count, and associated images.
 
-These endpoints work together to provide comprehensive data on both anime and their characters, which the project processes into structured datasets for easy use and analysis.
+These endpoints work together to provide comprehensive data on both anime and their character, which the project processes into structured datasets for easy use and analysis.
 
 For more information, visit the project repository at [GitHub](https://github.com/rixmape/mal-dataset-builder).
